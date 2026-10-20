@@ -64,6 +64,12 @@ def test_validate_llm_strict():
     assert intel.validate_llm("мусор", {"a"}) == [] and intel.validate_llm({"facts": "x"}, {"a"}) == []
 
 
+def test_validate_llm_buy_with_sell_price():
+    obj = {"facts": [{"id": "a", "kind": "buy", "player": "Mac Allister", "price": 12000, "sell_price": 15500, "action": "buy"}]}
+    out = intel.validate_llm(obj, {"a"})
+    assert [(f["kind"], f["action"], f["price"]) for f in out] == [("buy", "buy_below", 12000), ("sell", "sell_above", 15500)]
+
+
 def test_confidence_grows_with_sources():
     assert intel.confidence([0.5]) == 0.4
     assert intel.confidence([0.5, 0.5]) > intel.confidence([0.5])
@@ -104,7 +110,7 @@ def test_merge_and_opinions(db, monkeypatch):
     intel.ensure_stats(db, srcs)
     monkeypatch.setattr(intel, "load_sources", lambda *a, **k: srcs)
     for src in ("robtrade", "sherman_s"):
-        db.x("INSERT INTO facts (key,kind,player,version,rating,action,price,src,ts,text,ea_id) VALUES ('price:c1','sell','Stanway','',0,'sell_above',49000,?,?,'x|flip',1)", (src, now))
+        db.x("INSERT INTO facts (key,kind,player,version,rating,action,price,src,ts,text,ea_id) VALUES ('sell:c1','sell','Stanway','',0,'sell_above',49000,?,?,'x|flip',1)", (src, now))
     ev = intel.merge(db, now)
     assert len(ev) == 1 and ev[0]["n"] == 2 and ev[0]["conf"] > 0.55 and ev[0]["flip"]
     ops = intel.opinions(db, now)

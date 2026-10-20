@@ -41,7 +41,7 @@ def test_search_and_resolve(db):
     page = 'eaId:111,overall:87,commonName:"Bellerín",cardName:"Bellerín",rarityName:"Rare" eaId:112,overall:90,commonName:"Bellerín",cardName:"Bellerín",rarityName:"Team of the week"'
     found = cards.parse_search(page)
     assert [c["ea_id"] for c in found] == [111, 112]
-    sess = FakeSession({"fut.gg/players": page})
+    FakeSession({"fut.gg/players": page})
     orig = http.get
     http.get = lambda url, **kw: page
     try:

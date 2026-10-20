@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from office import accountant, config, football, intel, llm, link, market, risk, ru, sbc, trader
+from office import accountant, football, intel, llm, link, market, risk, ru, sbc, trader
 from office.model import Opinion
 from tests.conftest import FakeResp, FakeSession
 
@@ -263,7 +263,7 @@ def test_ledger_idempotent_and_profit(db):
 
 def test_price_check_and_dept_stats(db):
     now = time.time()
-    sid = mk_signal(db, now - 900)
+    mk_signal(db, now - 900)
     assert accountant.check_prices(db, {"prices": {7: 79500}}, now) == 1
     accountant.update_dept_stats(db, now)
     accountant.update_dept_stats(db, now)                              # второй вызов не удваивает

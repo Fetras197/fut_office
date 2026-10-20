@@ -2,11 +2,9 @@
 Кандидаты в команду недели и ин-формы определяются заранее; травмы накладывают запрет."""
 import datetime as dt
 import json
-import time
 
-import requests
 
-from . import cards, config, http, ru, sbc
+from . import cards, config, http, sbc
 from .model import Opinion
 
 LEAGUES = ["eng.1", "esp.1", "ger.1", "ita.1", "fra.1", "uefa.champions", "uefa.europa", "ned.1", "por.1"]
@@ -52,7 +50,7 @@ def fetch_espn(db, now: float, days: int = 4, session=None) -> int:
                 score = 3 * st["goals"] - 3 * st["reds"]
                 rid = f"espn:{lg}:{day}:{name}"
                 db.x("INSERT OR REPLACE INTO football VALUES (?,?,?,?,?,?,?,?,?,?)", (rid, now, name, lg, st["goals"], 0, 0, 0, score,
-                                                                                       f"голов {st['goals']}" + (f", удалён" if st["reds"] else "")))
+                                                                                       f"голов {st['goals']}" + (", удалён" if st["reds"] else "")))
                 got += 1
             if events and len(fin) == len(events) and i >= 1:
                 db.kv_set(ck, "done")

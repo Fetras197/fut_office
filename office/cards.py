@@ -5,7 +5,7 @@ import re
 import time
 import unicodedata
 
-from . import config, http
+from . import http
 
 R2 = "https://r2.fut.gg/27"
 FEED_KEY = "ps5-dyn"    # у fut.gg один консольный рынок; отдельной цены Xbox нет

@@ -2,7 +2,6 @@
 Состояние (office.db, журналы) лежит в ветке state. Сбой одного отдела не роняет проход."""
 import json
 import os
-import sys
 import time
 import traceback
 

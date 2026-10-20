@@ -224,8 +224,14 @@ def validate_llm(obj: dict, valid_ids: set[str]) -> list[dict]:
         act = ACTIONS_OK.get(f.get("action") or "none", "none")
         if price and act == "none":
             continue
-        out.append({"uid": str(f["id"]), "kind": f["kind"], "player": player, "version": str(f.get("version") or "")[:12], "rating": rating, "action": act,
-                    "price": price, "note": str(f.get("note") or "")[:140]})
+        base = {"uid": str(f["id"]), "player": player, "version": str(f.get("version") or "")[:12], "rating": rating, "note": str(f.get("note") or "")[:140]}
+        out.append({**base, "kind": f["kind"], "action": act, "price": price})
+        try:
+            sp = int(f.get("sell_price") or 0)
+        except (TypeError, ValueError):
+            sp = 0
+        if f["kind"] == "buy" and player and 150 <= sp <= 20_000_000:      # «купить до X, продать по Y» — две стороны одной сделки
+            out.append({**base, "kind": "sell", "action": "sell_above", "price": sp})
     return out
 
 
@@ -243,7 +249,7 @@ def fact_key(kind: str, player: str, ea_id: int | None, note: str, rating: int =
     if kind == "fodder" and rating and not player:
         return f"fodder:r{rating}"
     who = f"c{ea_id}" if ea_id else cards.norm(player) or hashlib.sha1(cards.norm(note).encode()).hexdigest()[:8]
-    group = "price" if kind in ("buy", "sell") else kind
+    group = kind
     return f"{group}:{who}"
 
 

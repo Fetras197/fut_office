@@ -2,8 +2,6 @@
 Цена «Купить до» всегда не ниже текущей цены карты (иначе сигнал бесполезен) и не выше предела, при котором прибыль после налога проходит пороги риск-менеджера."""
 import datetime as dt
 import json
-import re
-import time
 
 from . import cards, config, ru, risk, telegram
 from .model import Opinion

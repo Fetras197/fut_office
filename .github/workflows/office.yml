@@ -1,0 +1,91 @@
+name: office
+
+# FUT-офис: один проход каждые 30 минут с 08:00 до 22:30 по Москве, ночью — два прохода (сбор данных). Состояние лежит в ветке `state`.
+# Лимит бесплатных минут (2000 в месяц на все приватные репозитории): проход должен укладываться в минуту.
+# Стоп-кран: переменная репозитория OFFICE_HALT=1 (сигналы не отправляются) или Disable workflow.
+on:
+  schedule:
+    - cron: "*/30 5-19 * * *"
+    - cron: "0 22,1 * * *"
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Не гонять pytest перед проходом"
+        type: boolean
+        default: true
+      llm_check:
+        description: "Проверка цепочки нейросетей: Gemini выключен, один вызов"
+        type: boolean
+        default: false
+
+concurrency:
+  group: office            # два прохода одновременно = два писателя в SQLite
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      FO_STATE: ${{ github.workspace }}/state
+      PYTHONUNBUFFERED: "1"
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TG_CHAT: ${{ secrets.TG_CHAT }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      OFFICE_HALT: ${{ vars.OFFICE_HALT }}
+      GEMINI_DISABLED: ${{ inputs.llm_check && '1' || '' }}
+      GEMINI_DAILY_BUDGET: ${{ vars.GEMINI_DAILY_BUDGET || '300' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Состояние из ветки state
+        id: restore
+        run: |
+          mkdir -p state
+          if git clone --quiet --depth 1 --branch state "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" prev 2>/dev/null; then
+            rm -rf prev/.git; cp -r prev/. state/; rm -rf prev
+          else
+            echo "ветки state ещё нет — начинаем с чистого состояния"
+          fi
+          mkdir -p state/logs
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Зависимости
+        run: pip install -r requirements.txt
+
+      - name: Тесты (по желанию, при ручном запуске)
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.skip_tests }}
+        run: python -m pytest -q -x -p no:cacheprovider
+
+      - name: Проверка нейросетей
+        if: ${{ inputs.llm_check }}
+        run: python -m office llmcheck
+
+      - name: Проход офиса
+        if: ${{ !inputs.llm_check }}
+        run: python -m office cloud
+
+      - name: Сохранить состояние в ветку state
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        run: |
+          cd state
+          git init -q -b state
+          git config user.name "fut-office"
+          git config user.email "fut-office@users.noreply.github.com"
+          git add -f office.db signals.json logs 2>/dev/null || git add -f office.db
+          git commit -q -m "state $(date -u +%FT%TZ) run ${{ github.run_id }}"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state

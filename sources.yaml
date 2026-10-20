@@ -1,0 +1,28 @@
+# Источники разведки. rating — стартовая точность (0..1); дальше её считает бухгалтер по проверенным фактам.
+# interval_min — как часто опрашивать (30–60). enabled: false — выключен. Чтобы добавить канал, допишите строку.
+defaults:
+  interval_min: 30
+  rating: 0.5
+
+sources:
+  # ── Телеграм (открытая лента t.me/s/<ник>, без аккаунта)
+  - {id: robtrade,  kind: telegram, handle: robtrade,  title: "Роб Трейд (трейдинг)",           rating: 0.55}
+  - {id: sherman_s, kind: telegram, handle: sherman_s, title: "Шерман (новости и утечки)",      rating: 0.55}
+  - {id: AJAXFA,    kind: telegram, handle: AJAXFA,    title: "Аякс ФА (новости)",              rating: 0.5}
+  - {id: worldeafc, kind: telegram, handle: worldeafc, title: "Мир ЕА ФС (новости)",          rating: 0.5}
+  - {id: jeepfifa,  kind: telegram, handle: jeepfifa,  title: "Джип ФИФА (новости)",            rating: 0.5}
+  # хаб FUT Reveal: точный ник не найден (открытой ленты t.me/s у проверенных вариантов нет). Впишите ник в handle и включите.
+  - {id: futreveal, kind: telegram, handle: futreveal, title: "ФУТ Ревил (хаб)", rating: 0.5, enabled: false}
+
+  # ── Ютуб (RSS по ID канала, пересказ через Gemini как в ytwatch)
+  - {id: teddy127,  kind: youtube, channel_id: UCZvo1h28WyGeWz5ccrJupbQ, title: "Тедди (ютуб)",  interval_min: 60, rating: 0.5, max_age_h: 48}
+  - {id: prorecoil, kind: youtube, channel_id: UCZWklCuZj8F3EfrtTisx__g, title: "ПроРекойл (ютуб)", interval_min: 60, rating: 0.5, max_age_h: 48}
+
+  # ── Сайты (заголовки свежих статей)
+  - {id: futgg_news,   kind: site, url: "https://www.fut.gg/news/",        title: "Фут-джи-джи (новости)",        interval_min: 60, rating: 0.6}
+  - {id: futbin_news,  kind: site, url: "https://www.futbin.com/news",    title: "Футбин (новости)",        interval_min: 60, rating: 0.6}
+  - {id: sportskeeda,  kind: site, url: "https://www.sportskeeda.com/ea-fc", title: "Спортскида (наборы)", interval_min: 60, rating: 0.45}
+  - {id: realsport101, kind: site, url: "https://realsport101.com/",       title: "Риалспорт (трейдинг)", interval_min: 60, rating: 0.45}
+
+  # ── Реддит (JSON; при блокировке источник молча пропускается)
+  - {id: reddit_easportsfc, kind: reddit, url: "https://www.reddit.com/r/EASportsFC/new.json?limit=25", title: "Реддит (обсуждение)", interval_min: 60, rating: 0.4}

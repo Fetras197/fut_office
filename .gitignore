@@ -1,0 +1,14 @@
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+.env
+.pytest_cache/
+state/
+*.log
+*.sqlite
+data/*.csv
+results/
+*.pid
+*.lock
+cookies.txt

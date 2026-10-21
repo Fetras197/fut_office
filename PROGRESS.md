@@ -22,3 +22,4 @@
 - accountant: verify_trials/virtual_stats/evening_report; buttons.py (getUpdates в облаке). Осталось: cloud.py, workflow cron 21:00, тесты, Actions
 - cloud/accountant/buttons/trader готовы, тесты test_trader.py; осталось: test_buttons, test_cloud (новый), workflow, Actions-прогон, отчёт
 - 12:38 тесты по файлам зелёные (basics 8, intel 18, depts 21, trader 17, buttons 4, cloud 3). Дальше: коммит, Actions-прогон
+- 12:42 Прогон в Actions (run 39586063473) успешен: 71 тест, проход 78 с; кандидатов 11, сигналов 0, пробных записей 3 (причины отказов: нет цены продажи, цена уже выше допустимой). Телефон остановлен.

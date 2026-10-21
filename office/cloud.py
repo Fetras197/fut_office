@@ -54,10 +54,11 @@ def run_pass(db=None, router=None, send=None, now: float | None = None, dry: boo
     out["intel"] = guarded("разведка", lambda: intel.run(db, router, now), {})
     if every(db, "sbc_refresh", 55 * 60, now):
         out["sbc_new"] = guarded("наборы SBC", lambda: sbc.refresh_sbc(db, now), [])
-    guarded("справочник карт", lambda: sbc.crawl_cards(db))
+    guarded("справочник карт", lambda: sbc.crawl_cards(db, pages=14))
     guarded("журнал цен", lambda: sbc.record_prices(db, gg, now))
     if every(db, "football", 100 * 60, now):
         out["football"] = guarded("футбол", lambda: football.run(db, now), {})
+    guarded("поведение после промо", lambda: sbc.promo_watch(db, gg, now))
     guarded("проверка прогнозов", lambda: sbc.verify_forecasts(db, gg, now))
     ops = []
     for name, fn in (("мнения: разведка", lambda: intel.opinions(db, now)), ("мнения: рынок", lambda: market.opinions(db, phone, gg, now)),

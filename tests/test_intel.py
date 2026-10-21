@@ -138,3 +138,21 @@ def test_sources_yaml_has_required():
     assert not any(s["kind"] == "x" or "twitter" in json.dumps(s).lower() for s in ids.values())
     kinds = {s["kind"] for s in ids.values()}
     assert {"telegram", "youtube", "site", "reddit"} <= kinds
+
+
+def test_video_waits_for_summary_then_parsed(db, monkeypatch):
+    now = time.time()
+    intel.ensure_stats(db, [{"id": "teddy127", "kind": "youtube", "rating": 0.5}])
+    monkeypatch.setattr(intel.cards, "resolve", lambda *a, **k: None)
+    db.x("INSERT INTO raw (uid,src,ts,url,text) VALUES ('teddy127|yt:AbC','teddy127',?,'https://youtu.be/AbC','Слив TOTW')", (now,))
+    intel.process_raw(db, None, now)
+    assert db.one("SELECT parsed FROM raw")["parsed"] == 0            # без пересказа не трогаем
+    monkeypatch.setattr(intel.llm, "video_summary", lambda url: "• Mac Allister до 850")
+    intel._summarize_videos(db, {"id": "teddy127"}, now)
+    intel.process_raw(db, None, now)
+    assert db.one("SELECT COUNT(*) n FROM facts WHERE kind='buy'")["n"] == 1
+
+
+def test_robtrade_upto_list_is_buy_cap():
+    f = intel.extract_rules("📊 Список целей и цены:\n• Mac Allister — до 850\n• Gabriel — до 18,250")
+    assert [(x["player"], x["action"], x["price"]) for x in f] == [("Mac Allister", "buy_below", 850), ("Gabriel", "buy_below", 18250)]

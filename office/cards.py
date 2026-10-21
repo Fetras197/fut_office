@@ -63,7 +63,7 @@ def norm(s: str | None) -> str:
 
 def feed(force: bool = False) -> dict | None:
     """{"prices": {ea_id: цена}, "published": ts, "fetched": ts} или None (сеть). Кэш в памяти прохода."""
-    if _memo.get("feed") and not force:
+    if _memo.get("feed") and not force and time.time() - _memo["feed"]["fetched"] < 90:
         return _memo["feed"]
     try:
         man = parse_manifest(http.get(f"{R2}/manifest.json", pause_sec=1800) or "")

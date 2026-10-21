@@ -12,3 +12,4 @@ results/
 *.pid
 *.lock
 cookies.txt
+state_live/

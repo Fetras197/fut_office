@@ -30,6 +30,8 @@ def max_buy(sell: float) -> int:
 
 
 def hours_veto(now: float) -> str | None:
+    if config.IGNORE_HOURS:
+        return None
     w = dt.datetime.fromtimestamp(now, config.TZ)
     if 19 <= w.hour < 21:
         return "запретные часы 19–21 по Москве: на рынке наплыв предложений и цены скачут"

@@ -20,8 +20,8 @@ TOTW_W = re.compile(r"команд[аыу] недели|totw|тотв|toty|ин-
 PROMO_W = re.compile(r"промо|promo|future stars|звёзды будущего|starts?|стартует|начал|хэллоуин|halloween|ultimate scream|heritage", re.I)
 BUY_W = re.compile(r"закуп|покуп|скупа|берём|брать|ловим|купить|buy|снайп", re.I)
 FLIP_W = re.compile(r"активный трейд|утром|вечером|снайп|быстр|перекуп|сегодня", re.I)
-FODDER_W = re.compile(r"фо[дл]+ер|корм|83|84|85|86|87|88", re.I)
-PRICE_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*([A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+(?:\s+[A-ZÀ-Ýa-zà-ÿ][\wÀ-ÿ'’\.\-]+){0,3})\s*(>=|<=|≥|≤|>|<|→|–|—|-|:)\s*(?:до\s+)?(\d[\d\s\.,]*\d|\d)\s*(к|k|тыс|K)?", re.M)
+FODDER_W = re.compile(r"фо[дл]+ер|корм", re.I)
+PRICE_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*([A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+(?:\s+[A-ZÀ-Ýa-zà-ÿ][\wÀ-ÿ'’\.\-]+){0,3})\s*(>=|<=|≥|≤|>|<|→|–|—|-|:|до)\s*(до\s+)?(\d[\d\s\.,]*\d|\d)\s*(к|k|тыс|K)?", re.M)
 NAME_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*(?:[\U0001F1E6-\U0001F1FF]{2}\s*)?([A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+){0,2})\s*(?:[\U0001F1E6-\U0001F1FF]{2})?\s*$", re.M)
 RATING_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*(8[3-9]|9[0-1])\s*[—–\-:]+\s*>?\s*=?\s*(\d[\d\s\.,]*\d|\d)\s*(к|k)?\s*$", re.M)
 STOP_NAMES = {"Купи", "Футбол", "Boosty", "Тренировки", "Трейд", "Буст", "Rush", "FC", "EA", "SBC", "TOTW", "MLS", "WL"}
@@ -164,14 +164,14 @@ def extract_rules(text: str) -> list[dict]:
     facts = []
     buyish = bool(BUY_W.search(low))
     for m in PRICE_LINE.finditer(text):
-        name, op, raw, mult = m.group(1).strip(), m.group(2), m.group(3), m.group(4)
+        name, op, upto, raw, mult = m.group(1).strip(), m.group(2), m.group(3), m.group(4), m.group(5)
         if name.split()[0] in STOP_NAMES:
             continue
         price = _num(raw, mult)
         if not (150 <= price <= 20_000_000):
             continue
         sell = op in (">", ">=", "≥", "→")
-        buy = op in ("<", "<=", "≤")
+        buy = op in ("<", "<=", "≤", "до") or bool(upto)
         if not (sell or buy):
             continue
         facts.append({"kind": "sell" if sell else "buy", "player": name, "version": "", "rating": 0, "action": "sell_above" if sell else "buy_below",
@@ -201,6 +201,7 @@ def extract_rules(text: str) -> list[dict]:
     return facts
 
 
+LLM_ERR = [""]      # последняя ошибка цепочки нейросетей (для журнала прохода)
 KINDS = {"buy", "sell", "leak", "sbc", "promo", "totw", "fodder"}
 ACTIONS_OK = {"buy": "buy_below", "sell": "sell_above", "buy_below": "buy_below", "sell_above": "sell_above", "hold": "none", "none": "none"}
 
@@ -240,7 +241,8 @@ def extract_llm(router, posts: list[dict]) -> list[dict]:
         return []
     try:
         obj = router.ask("extract", {"posts": [{"id": p["uid"], "text": p["text"][:900]} for p in posts]})
-    except llm.LLMError:
+    except llm.LLMError as e:
+        LLM_ERR[0] = str(e)[:200]
         return []
     return validate_llm(obj, {p["uid"] for p in posts})
 
@@ -261,6 +263,8 @@ def process_raw(db, router, now: float, max_llm_posts: int = 12, max_resolve: in
     pending: list[tuple[dict, dict]] = []
     for r in rows:
         src = r["src"]
+        if "|yt:" in r["uid"] and "\n" not in (r["text"] or "") and now - r["ts"] < 12 * 3600:
+            continue          # ждёт пересказа видео
         fs = extract_rules(r["text"]) if r["text"] else []
         cyr = re.search(r"[А-Яа-я]{4,}", r["text"] or "") and not re.search(r"[A-Z][a-zà-ÿ]{2,}", r["text"] or "")
         needs_llm = (not fs or all(not f["player"] for f in fs)) and len(r["text"] or "") >= 40 and (LEAK_W.search(r["text"].lower()) or TOTW_W.search(r["text"].lower()) or SBC_W.search(r["text"].lower()) or BUY_W.search(r["text"].lower()) or src.startswith(("teddy", "prorec")) or cyr)
@@ -273,11 +277,17 @@ def process_raw(db, router, now: float, max_llm_posts: int = 12, max_resolve: in
             db.x("UPDATE raw SET parsed=1 WHERE uid=?", (r["uid"],))
     by_uid = {r["uid"]: r for r in rows}
     if llm_posts:
+        LLM_ERR[0] = ""
         got = extract_llm(router, llm_posts)
         stats["llm"] = len(got)
+        stats["llm_posts"] = len(llm_posts)
+        if LLM_ERR[0]:
+            stats["llm_err"] = LLM_ERR[0]
         for f in got:
             pending.append((by_uid[f["uid"]], f))
         for p in llm_posts:
+            if LLM_ERR[0] and not got and now - by_uid[p["uid"]]["ts"] < 18 * 3600:
+                continue          # нейросети недоступны (лимит): пост разберём позже, пока он свежий
             db.x("UPDATE raw SET parsed=1 WHERE uid=?", (p["uid"],))   # пост разобран нейросетью (даже если фактов нет)
     for r, f in pending:
         ea = None
@@ -374,14 +384,18 @@ def run(db, router, now: float | None = None, session=None, srcs: list[dict] | N
     for s in srcs:
         try:
             n = poll(db, s, now, session)
-            if s["kind"] == "youtube" and n > 0:
-                _summarize_videos(db, s, now)
             if n >= 0:
                 got[s["id"]] = n
         except Exception as e:   # сбой одного источника не должен ронять проход
             got[s["id"]] = f"сбой: {type(e).__name__}"
     stats = process_raw(db, router, now)
     stats["sources"] = got
+    for s in srcs:     # ролики пересказываем в последнюю очередь: пересказ разберётся на следующем проходе
+        if s["kind"] == "youtube" and s.get("enabled", True):
+            try:
+                _summarize_videos(db, s, now, limit=1)
+            except Exception as e:
+                stats.setdefault("video_err", str(type(e).__name__))
     return stats
 
 
@@ -389,8 +403,10 @@ def _summarize_videos(db, s: dict, now: float, limit: int = 2) -> None:
     """Новые ролики: Gemini смотрит видео и пересказывает; пересказ складывается как запись для разбора."""
     rows = db.q("SELECT * FROM raw WHERE src=? AND parsed=0 AND uid LIKE ? ORDER BY ts DESC LIMIT ?", (s["id"], f"{s['id']}|yt:%", limit))
     for r in rows:
+        if "\n" in (r["text"] or ""):
+            continue                                   # пересказ уже добавлен
         txt = llm.video_summary(r["url"])
         if txt:
             db.x("UPDATE raw SET text=?, parsed=0 WHERE uid=?", (f"{r['text']}\n{txt}"[:3000], r["uid"]))
-        else:
-            db.x("UPDATE raw SET parsed=1 WHERE uid=?", (r["uid"],))   # без пересказа ролик по заголовку не разбираем
+        elif now - r["ts"] > 12 * 3600:
+            db.x("UPDATE raw SET parsed=1 WHERE uid=?", (r["uid"],))   # пересказать не удалось за 12 часов: по заголовку не разбираем

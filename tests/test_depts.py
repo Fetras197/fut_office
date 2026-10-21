@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from office import accountant, football, intel, llm, link, market, risk, ru, sbc, trader
+from office import accountant, config, football, intel, llm, link, market, risk, ru, sbc, trader
 from office.model import Opinion
 from tests.conftest import FakeResp, FakeSession
 
@@ -368,3 +368,15 @@ def test_phone_link_roundtrip(monkeypatch):
     assert link.read_json("phone_feed.json", "phone", session=s) == {"ts": 1, "hang": []}
     monkeypatch.delenv("GH_TOKEN")
     assert link.read_json("phone_feed.json", "phone", session=s) is None            # без токена — молча None
+
+
+def test_promo_forecast_and_test_flag(db, moscow, monkeypatch):
+    now = moscow(2026, 10, 23, 14)
+    prices = {}
+    seed_fodder(db, prices, rating=85)
+    db.x("INSERT INTO facts (key,kind,src,ts,text) VALUES ('promo:x','promo','a',?,'Новое промо уже в игре')", (now - 3600,))
+    sbc.promo_watch(db, {"prices": prices}, now)
+    f = db.one("SELECT * FROM forecasts")
+    assert f["dept"] == "promo" and f["direction"] == "down" and f["ea_id"] == -85
+    monkeypatch.setattr(config, "IGNORE_HOURS", True)
+    assert risk.hours_veto(moscow(2026, 10, 21, 20)) is None

@@ -422,10 +422,13 @@ def make_backend(name: str = "router"):
     return {"router": RoleRouter, "gemini": GeminiBackend}[name]()
 
 
+_VIDEO_DOWN = [0.0]
+
+
 def video_summary(url: str, session=None, timeout: int = 240) -> str | None:
     """Пересказ ролика на русском (как ytwatch): Gemini сама смотрит видео по ссылке. Нет ключа/бюджета/ответа → None."""
     key = os.environ.get("GEMINI_API_KEY")
-    if not key or os.environ.get("GEMINI_DISABLED") == "1" or gemini_down() or not budget_allow("video"):
+    if not key or os.environ.get("GEMINI_DISABLED") == "1" or gemini_down() or not budget_allow("video") or time.time() < _VIDEO_DOWN[0]:
         return None
     q = ("Посмотри видео про EA FC 27 (Ultimate Team) и перечисли по-русски коротко, по одному пункту на строку: "
          "утечки и будущие наборы SBC, промо и команды недели, что покупать или продавать (имя игрока, версия карты, цена в монетах, если названа). Без вступлений.")
@@ -436,9 +439,8 @@ def video_summary(url: str, session=None, timeout: int = 240) -> str | None:
                                       params={"key": key}, json=body, timeout=timeout)
     except requests.RequestException:
         return None
-    if r.status_code in (429, 503):
-        mark("gemini", False)
-        gemini_pause(3 * 3600 if "PerDay" in r.text else 600)
+    if r.status_code in (429, 503):       # видео тяжёлое (сотни тысяч токенов): упираемся в лимит минуты — копим паузу только для видео, чтобы не мешать разбору постов
+        _VIDEO_DOWN[0] = time.time() + (3 * 3600 if "PerDay" in r.text else 1800)
         return None
     if r.status_code != 200:
         return None

@@ -238,3 +238,14 @@ def opinions(db, feed: dict | None, now: float) -> list[Opinion]:
                            srcs=(ev["srcs"] if ref and ev else []), buy_max=idx, sell_ref=sell, ttl_h=12, horizon_d=2))
         add_forecast(db, now, -r, f"корм {r}", "fodder", "up", idx, reasons[0])
     return ops
+
+
+def promo_watch(db, feed: dict | None, now: float) -> None:
+    """Поведение цен после промо: в первые часы нового промо записываем прогноз «корм дешевеет» и проверяем его через 1/3/7 дней."""
+    from . import risk
+    if not feed or not risk.promo_veto(db, now):
+        return
+    for r in (85, 87):
+        fi = fodder_index(db, feed, r)
+        if fi:
+            add_forecast(db, now, -r, f"корм {r}", "promo", "down", fi[0], "начало нового промо: предложение карт растёт")

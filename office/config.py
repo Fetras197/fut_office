@@ -29,3 +29,5 @@ def load_env(path: Path = ROOT / ".env") -> None:
                 os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
     except OSError:
         pass
+
+IGNORE_HOURS = os.environ.get("FO_IGNORE_HOURS") == "1"      # только для живой проверки днём/ночью: отключает запретные часы (в боевом режиме не ставить)

@@ -202,6 +202,7 @@ def extract_rules(text: str) -> list[dict]:
     return facts
 
 
+VIDEO_EVERY = 3 * 3600       # пересказ видео — не чаще раза в 3 часа (он долгий)
 LLM_ERR = [""]      # последняя ошибка цепочки нейросетей (для журнала прохода)
 KINDS = {"buy", "sell", "leak", "sbc", "promo", "totw", "fodder"}
 ACTIONS_OK = {"buy": "buy_below", "sell": "sell_above", "buy_below": "buy_below", "sell_above": "sell_above", "hold": "none", "none": "none"}
@@ -398,23 +399,29 @@ def run(db, router, now: float | None = None, session=None, srcs: list[dict] | N
                 got[sid] = n
     stats = process_raw(db, router, now)
     stats["sources"] = got
-    for s in srcs:     # ролики пересказываем в последнюю очередь: пересказ разберётся на следующем проходе
-        if s["kind"] == "youtube" and s.get("enabled", True):
+    video_ok = now - (db.kv_get("video_last") or 0) >= VIDEO_EVERY
+    for s in srcs:     # ролики пересказываем в последнюю очередь и не чаще раза в 3 часа: пересказ разберётся на следующем проходе
+        if video_ok and s["kind"] == "youtube" and s.get("enabled", True):
             try:
-                _summarize_videos(db, s, now, limit=1)
+                if _summarize_videos(db, s, now, limit=1):
+                    db.kv_set("video_last", now)
+                    video_ok = False
             except Exception as e:
                 stats.setdefault("video_err", str(type(e).__name__))
     return stats
 
 
-def _summarize_videos(db, s: dict, now: float, limit: int = 2) -> None:
+def _summarize_videos(db, s: dict, now: float, limit: int = 2) -> bool:
     """Новые ролики: Gemini смотрит видео и пересказывает; пересказ складывается как запись для разбора."""
+    done = False
     rows = db.q("SELECT * FROM raw WHERE src=? AND parsed=0 AND uid LIKE ? ORDER BY ts DESC LIMIT ?", (s["id"], f"{s['id']}|yt:%", limit))
     for r in rows:
         if "\n" in (r["text"] or ""):
             continue                                   # пересказ уже добавлен
         txt = llm.video_summary(r["url"])
+        done = True                                   # попытка была (даже неудачная) — следующая не раньше чем через 3 часа
         if txt:
             db.x("UPDATE raw SET text=?, parsed=0 WHERE uid=?", (f"{r['text']}\n{txt}"[:3000], r["uid"]))
         elif now - r["ts"] > 12 * 3600:
             db.x("UPDATE raw SET parsed=1 WHERE uid=?", (r["uid"],))   # пересказать не удалось за 12 часов: по заголовку не разбираем
+    return done

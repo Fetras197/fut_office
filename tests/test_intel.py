@@ -156,3 +156,18 @@ def test_video_waits_for_summary_then_parsed(db, monkeypatch):
 def test_robtrade_upto_list_is_buy_cap():
     f = intel.extract_rules("📊 Список целей и цены:\n• Mac Allister — до 850\n• Gabriel — до 18,250")
     assert [(x["player"], x["action"], x["price"]) for x in f] == [("Mac Allister", "buy_below", 850), ("Gabriel", "buy_below", 18250)]
+
+
+def test_video_summary_at_most_every_3_hours(db, monkeypatch):
+    now = time.time()
+    s = {"id": "teddy127", "kind": "youtube", "channel_id": "x", "rating": 0.5}
+    intel.ensure_stats(db, [s])
+    monkeypatch.setattr(intel, "fetch_items", lambda *a, **k: [{"uid": "yt:%d" % i, "ts": now - 60, "url": "https://youtu.be/%d" % i, "text": "t%d" % i} for i in range(3)])
+    calls = []
+    monkeypatch.setattr(intel.llm, "video_summary", lambda url: calls.append(url) or "• Mac Allister до 850")
+    intel.run(db, None, now, srcs=[s])
+    assert len(calls) == 1
+    intel.run(db, None, now + 3600, srcs=[{**s, "interval_min": 0}])
+    assert len(calls) == 1                                           # через час — нельзя
+    intel.run(db, None, now + 3 * 3600 + 60, srcs=[{**s, "interval_min": 0}])
+    assert len(calls) == 2

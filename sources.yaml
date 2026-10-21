@@ -11,8 +11,6 @@ sources:
   - {id: AJAXFA,    kind: telegram, handle: AJAXFA,    title: "Аякс ФА (новости)",              rating: 0.5}
   - {id: worldeafc, kind: telegram, handle: worldeafc, title: "Мир ЕА ФС (новости)",          rating: 0.5}
   - {id: jeepfifa,  kind: telegram, handle: jeepfifa,  title: "Джип ФИФА (новости)",            rating: 0.5}
-  # хаб FUT Reveal: точный ник не найден (открытой ленты t.me/s у проверенных вариантов нет). Впишите ник в handle и включите.
-  - {id: futreveal, kind: telegram, handle: futreveal, title: "ФУТ Ревил (хаб)", rating: 0.5, enabled: false}
 
   # ── Ютуб (RSS по ID канала, пересказ через Gemini как в ytwatch)
   - {id: teddy127,  kind: youtube, channel_id: UCZvo1h28WyGeWz5ccrJupbQ, title: "Тедди (ютуб)",  interval_min: 60, rating: 0.5, max_age_h: 48}

@@ -380,3 +380,55 @@ def test_promo_forecast_and_test_flag(db, moscow, monkeypatch):
     assert f["dept"] == "promo" and f["direction"] == "down" and f["ea_id"] == -85
     monkeypatch.setattr(config, "IGNORE_HOURS", True)
     assert risk.hours_veto(moscow(2026, 10, 21, 20)) is None
+
+
+def test_reversion_needs_history_and_drop(db):
+    now = time.time()
+    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
+    feed = {"prices": {7: 80000}}
+    assert sbc.reversion_opinions(db, feed, [7], now) == []                     # истории нет
+    for i, p in enumerate((100000, 101000, 99000, 100000, 100500)):
+        db.x("INSERT INTO price_log VALUES (7, ?, ?)", (now - (5 - i) * 1800, p))
+    ops = sbc.reversion_opinions(db, feed, [7], now)
+    assert len(ops) == 1 and ops[0].dept == "sbc" and ops[0].sell_ref == 100000 and ops[0].kind == "flip" and "ниже своей обычной" in ops[0].reason
+    assert sbc.reversion_opinions(db, {"prices": {7: 97000}}, [7], now) == []   # просадка меньше 8%
+    assert db.one("SELECT dept FROM forecasts")["dept"] == "reversion"
+
+
+def test_market_plus_reversion_make_a_signal(db, moscow):
+    now = moscow(2026, 10, 21, 14)
+    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
+    for i, p in enumerate((100000, 101000, 99000, 100000, 100500)):
+        db.x("INSERT INTO price_log VALUES (7, ?, ?)", (now - (5 - i) * 1800, p))
+    gg = {"prices": {7: 80000}}
+    phone = {"ts": now, "hang": [{"ea_id": 7, "name": "Haaland", "rating": 91, "price": 80000, "avgp": 100000, "sales24h": 40, "ts": now}]}
+    ops = market.opinions(db, phone, gg, now) + sbc.reversion_opinions(db, gg, [7], now)
+    sig, why = trader.build(db, "c7", ops, gg, now)
+    assert sig and set(sig["depts"]) == {"market", "sbc"} and sig["type"] == "flip"
+
+
+def test_every_department_speaks_russian(db, moscow, monkeypatch):
+    """Все строки «почему» от всех отделов — без латиницы (кроме имени игрока)."""
+    import re
+    now = moscow(2026, 10, 21, 14)
+    srcs = [{"id": "robtrade", "kind": "telegram", "rating": 0.55, "title": "Роб Трейд"}]
+    intel.ensure_stats(db, srcs)
+    monkeypatch.setattr(intel, "load_sources", lambda *a, **k: srcs)
+    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
+    db.x("INSERT INTO facts (key,kind,player,action,price,src,ts,text,ea_id) VALUES ('sell:c7','sell','Haaland','sell_above',100000,'robtrade',?,'x',7)", (now,))
+    for i, p in enumerate((100000, 101000, 99000, 100000, 100500)):
+        db.x("INSERT INTO price_log VALUES (7, ?, ?)", (now - (5 - i) * 1800, p))
+    prices = {7: 80000}
+    seed_fodder(db, prices, rating=85)
+    db.x("INSERT INTO facts (key,kind,player,rating,action,price,src,ts,text) VALUES ('fodder:r85','fodder','',85,'sell_above',2800,'robtrade',?,'корм')", (now,))
+    db.x("INSERT INTO football VALUES ('f1',?,'Haaland','Манчестер',2,1,3,0,9,'голов 2, передач 1, бонус 3')", (now,))
+    gg = {"prices": prices}
+    phone = {"ts": now, "hang": [{"ea_id": 7, "name": "Haaland", "rating": 91, "price": 80000, "avgp": 100000, "sales24h": 40, "lots": [80000], "ts": now}]}
+    monkeypatch.setattr(football.cards, "resolve", lambda *a, **k: db.one("SELECT * FROM cards WHERE ea_id=7"))
+    ops = (intel.opinions(db, now) + market.opinions(db, phone, gg, now) + sbc.opinions(db, gg, now) + football.opinions(db, gg, now) + sbc.reversion_opinions(db, gg, [7], now))
+    assert {o.dept for o in ops} == {"intel", "market", "sbc", "football"}
+    for o in ops:
+        assert ru.no_latin(o.reason), o.reason
+        assert ru.no_latin(o.version), o.version
+    msg = trader.text_of(trader.build(db, "c7", [o for o in ops if o.ea_id == 7], gg, now)[0], 1)
+    assert ru.no_latin(re.sub(r"<[^>]+>", "", msg).replace("Haaland", ""))

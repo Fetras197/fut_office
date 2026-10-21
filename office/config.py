@@ -17,6 +17,7 @@ MIN_SCORE = 60
 MAX_SIGNALS_PER_DAY = 10
 MIN_DEPTS = 2
 DEDUP_HOURS = 6
+PRICE_LOG_GAP = int(os.environ.get("FO_PRICE_GAP", 25 * 60))   # не чаще одной записи цены карты за столько секунд
 PHONE_STALE_MIN = 90          # данные телефона старше — отдел «рынок» молчит
 
 

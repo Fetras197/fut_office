@@ -36,7 +36,7 @@ def opinions(db, phone: dict | None, gg: dict | None, now: float) -> list[Opinio
         sales = r.get("sales24h")
         strength = min(0.9, 0.35 + gap * 1.2) * (0.9 if sales is None else 1.0 if sales >= 10 else 0.6)
         lots = r.get("lots") or []
-        why = (f"на Futbin самый дешёвый лот {ru.num(price)}, а средняя цена последних продаж {ru.num(avgp)}"
+        why = (f"на сайте Футбин самый дешёвый лот {ru.num(price)}, а средняя цена последних продаж {ru.num(avgp)}"
                + (f", продаж за сутки {sales}" if sales is not None else "") + (f", лотов в продаже {len(lots)}" if lots else ""))
         ver = intel._ver_ru(c["rarity"])
         ops.append(Opinion("market", c["ea_id"], c["name"], ver, c["rating"], round(strength, 2), "flip", why, srcs=[], buy_max=price, sell_ref=avgp,

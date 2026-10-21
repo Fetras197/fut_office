@@ -101,7 +101,8 @@ def fodder_index(db, feed: dict | None, rating: int) -> tuple[int, int] | None:
     return int(statistics.median(p for p, _ in ps[:5])), ps[0][1]
 
 
-def log_price(db, ea_id: int, price: int, now: float, min_gap: float = 25 * 60) -> None:
+def log_price(db, ea_id: int, price: int, now: float, min_gap: float | None = None) -> None:
+    min_gap = config.PRICE_LOG_GAP if min_gap is None else min_gap
     last = db.one("SELECT MAX(ts) AS t FROM price_log WHERE ea_id=?", (ea_id,))
     if not last or not last["t"] or now - last["t"] >= min_gap:
         db.x("INSERT INTO price_log VALUES (?,?,?)", (ea_id, now, int(price)))
@@ -114,7 +115,7 @@ def tracked_ids(db, now: float) -> set[int]:
     return ids
 
 
-def record_prices(db, feed: dict | None, now: float) -> int:
+def record_prices(db, feed: dict | None, now: float, extra_ids=()) -> int:
     if not feed:
         return 0
     n = 0
@@ -123,7 +124,7 @@ def record_prices(db, feed: dict | None, now: float) -> int:
         if fi:
             log_price(db, -r, fi[0], now)
             n += 1
-    for i in tracked_ids(db, now):
+    for i in tracked_ids(db, now) | {int(e) for e in extra_ids if e}:
         p = feed["prices"].get(i)
         if p:
             log_price(db, i, p, now)
@@ -249,3 +250,27 @@ def promo_watch(db, feed: dict | None, now: float) -> None:
         fi = fodder_index(db, feed, r)
         if fi:
             add_forecast(db, now, -r, f"корм {r}", "promo", "down", fi[0], "начало нового промо: предложение карт растёт")
+
+
+def reversion_opinions(db, feed: dict | None, ea_ids, now: float, min_n: int = 4, min_span_min: float = 45) -> list[Opinion]:
+    """Прогноз «возврат к своей медиане»: у карты с зависшей ценой текущая цена заметно ниже медианы собственной истории (журнал цен fut.gg) — прогноз отдела: вернётся."""
+    ops = []
+    if not feed:
+        return ops
+    for i in {int(e) for e in ea_ids if e}:
+        cur = feed["prices"].get(i)
+        rows = db.q("SELECT ts, price FROM price_log WHERE ea_id=? AND ts>? ORDER BY ts", (i, now - 3 * 86400))
+        if not cur or len(rows) < min_n or (rows[-1]["ts"] - rows[0]["ts"]) / 60 < min_span_min:
+            continue
+        med = statistics.median(r["price"] for r in rows)
+        drop = 1 - cur / med
+        if drop < 0.08:
+            continue
+        c = db.one("SELECT * FROM cards WHERE ea_id=?", (i,))
+        if not c:
+            continue
+        ops.append(Opinion("sbc", i, c["name"], intel._ver_ru(c["rarity"]), c["rating"], round(min(0.85, 0.35 + drop * 2), 2), "flip",
+                           f"цена на {drop * 100:.0f}% ниже своей обычной за последние дни (обычно около {ru.num(med)}), прогноз — возврат".replace(".", ","),
+                           buy_max=cur, sell_ref=int(med), ttl_h=3, horizon_d=0.2))
+        add_forecast(db, now, i, c["name"], "reversion", "up", cur, "возврат к медиане")
+    return ops

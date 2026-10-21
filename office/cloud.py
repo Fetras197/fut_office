@@ -55,7 +55,6 @@ def run_pass(db=None, router=None, send=None, now: float | None = None, dry: boo
     if every(db, "sbc_refresh", 55 * 60, now):
         out["sbc_new"] = guarded("наборы SBC", lambda: sbc.refresh_sbc(db, now), [])
     guarded("справочник карт", lambda: sbc.crawl_cards(db, pages=14))
-    guarded("журнал цен", lambda: sbc.record_prices(db, gg, now))
     if every(db, "football", 100 * 60, now):
         out["football"] = guarded("футбол", lambda: football.run(db, now), {})
     guarded("поведение после промо", lambda: sbc.promo_watch(db, gg, now))
@@ -64,6 +63,9 @@ def run_pass(db=None, router=None, send=None, now: float | None = None, dry: boo
     for name, fn in (("мнения: разведка", lambda: intel.opinions(db, now)), ("мнения: рынок", lambda: market.opinions(db, phone, gg, now)),
                      ("мнения: наборы", lambda: sbc.opinions(db, gg, now)), ("мнения: футбол", lambda: football.opinions(db, gg, now))):
         ops += guarded(name, fn, []) or []
+    mk = [o for o in ops if o.dept == "market"]
+    guarded("журнал цен", lambda: sbc.record_prices(db, gg, now, [o.ea_id for o in mk]))
+    ops += guarded("мнения: возврат к медиане", lambda: sbc.reversion_opinions(db, gg, [o.ea_id for o in mk], now), []) or []
     out["opinions"] = {d: sum(1 for o in ops if o.dept == d) for d in ("intel", "market", "sbc", "football")}
     guarded("бухгалтер: журнал", lambda: accountant.ingest_ledger(db, ledger))
     guarded("бухгалтер: проверка цен", lambda: accountant.check_prices(db, cards.feed(False), now))

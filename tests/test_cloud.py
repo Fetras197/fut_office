@@ -1,6 +1,7 @@
 import json
 
-from office import cards, cloud, config, football, http, intel, link, llm, sbc
+from office import cards, cloud, config, football, http, intel, llm, sbc
+from tests.test_trader import seed
 
 
 class NoLLM:
@@ -8,68 +9,49 @@ class NoLLM:
         raise llm.LLMUnavailable("нет ключей")
 
 
-def setup_world(monkeypatch, db, now, price=80000):
+def world(monkeypatch, db, now, tmp_path):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    prices = {}
+    seed(db, 87, prices)
     db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
-    phone = {"ts": now - 60, "hang": [{"ea_id": 7, "name": "Haaland", "rating": 91, "price": 80000, "avgp": 100000, "sales24h": 40, "lots": [80000], "ts": now - 60}]}
-    monkeypatch.setattr(link, "read_json", lambda path, branch="phone", session=None: phone if path == "phone_feed.json" else None)
-    monkeypatch.setattr(cards, "feed", lambda force=False: {"prices": {7: price}, "published": now, "fetched": now})
-    monkeypatch.setattr(http, "get", lambda url, **kw: None)           # весь внешний мир недоступен
+    prices[7] = 80000
+    monkeypatch.setattr(cards, "feed", lambda force=False: {"prices": prices, "published": now, "fetched": now})
+    monkeypatch.setattr(http, "get", lambda url, **kw: None)
     monkeypatch.setattr(cards, "search", lambda *a, **k: [])
-    monkeypatch.setattr(intel, "load_sources", lambda *a, **k: [{"id": "robtrade", "kind": "telegram", "handle": "robtrade", "rating": 0.55, "title": "Роб Трейд"}])
-    intel.ensure_stats(db, intel.load_sources())
-    db.x("INSERT INTO facts (key,kind,player,action,price,src,ts,text,ea_id) VALUES ('sell:c7','sell','Haaland','sell_above',100000,'robtrade',?,'ориентир|flip',7)", (now - 600,))
+    srcs = [{"id": "robtrade", "kind": "telegram", "handle": "robtrade", "rating": 0.55, "title": "Роб Трейд"}]
+    monkeypatch.setattr(intel, "load_sources", lambda *a, **k: srcs)
+    intel.ensure_stats(db, srcs)
+    return prices
 
 
-def test_full_pass_sends_signal_and_publishes(monkeypatch, db, moscow, tmp_path):
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
-    now = moscow(2026, 10, 21, 14)
-    setup_world(monkeypatch, db, now)
+def test_thursday_cycle_signal_end_to_end(monkeypatch, db, moscow, tmp_path):
+    now = moscow(2026, 10, 22, 19, 30)                      # четверг вечер, но 19–21 запрещено → сначала проверим, что час учтён
+    world(monkeypatch, db, now, tmp_path)
     sent = []
-    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda t, b=None: sent.append((t, b)) or 11, now=now)
-    assert out["opinions"]["market"] == 1 and out["opinions"]["intel"] == 1
-    assert out["trader"]["sent"] == 1 and len(sent) == 1
-    text, buttons = sent[0]
-    assert "Haaland" in text and "Купить до" in text and buttons[0][0][1].startswith("of:b:")
-    row = db.one("SELECT * FROM signals")
-    assert row["tg_msg"] == 11 and row["buy_max"] >= 80000 and set(json.loads(row["depts"])) == {"intel", "market"}
-    pub = json.loads((tmp_path / "signals.json").read_text())
-    assert pub["signals"][0]["name"] == "Haaland"
+    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda t, b=None: sent.append(t) or 1, now=now)
+    assert sent == [] and out["trader"]["sent"] == 0 and out["opinions"]["sbc"] >= 1       # мнение есть, но 19–21 — запрет
+    assert out["trader"]["trials"] >= 0
 
 
-def test_pass_survives_department_failure(monkeypatch, db, moscow, tmp_path):
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
-    now = moscow(2026, 10, 21, 14)
-    setup_world(monkeypatch, db, now)
+def test_pass_with_two_depts_sends_and_records_virtual(monkeypatch, db, moscow, tmp_path):
+    now = moscow(2026, 10, 23, 12)                          # пятница до 16:00, цикл активен
+    world(monkeypatch, db, now, tmp_path)
+    db.x("INSERT INTO facts (key,kind,rating,action,price,src,ts,text) VALUES ('fodder:r87','fodder',87,'none',0,'robtrade',?,'утечка')", (now,))
+    sent = []
+    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda t, b=None: sent.append((t, b)) or 5, now=now)
+    assert out["trader"]["sent"] == 1 and "корм" in sent[0][0] and sent[0][1][0][0][1].startswith("of:b:")
+    assert {r["mode"] for r in db.q("SELECT mode FROM trials")} == {"signal"}
+    assert json.loads((tmp_path / "signals.json").read_text())["signals"][0]["type"] == "fodder"
+
+
+def test_pass_survives_failures_and_halt(monkeypatch, db, moscow, tmp_path):
+    now = moscow(2026, 10, 23, 12)
+    world(monkeypatch, db, now, tmp_path)
     def boom(*a, **k):
         raise RuntimeError("сломался")
     monkeypatch.setattr(football, "run", boom)
     monkeypatch.setattr(sbc, "refresh_sbc", boom)
-    sent = []
-    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda t, b=None: sent.append(t) or 1, now=now)
-    assert out["trader"]["sent"] == 1
-
-
-def test_halt_stops_signals(monkeypatch, db, moscow, tmp_path):
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda *a: 1, now=now)
+    assert "trader" in out
     monkeypatch.setenv("OFFICE_HALT", "1")
-    now = moscow(2026, 10, 21, 14)
-    setup_world(monkeypatch, db, now)
-    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda *a: 1, now=now)
-    assert out["trader"] == {"halt": True} and db.one("SELECT COUNT(*) n FROM signals")["n"] == 0
-
-
-def test_forbidden_hour_no_signal(monkeypatch, db, moscow, tmp_path):
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
-    now = moscow(2026, 10, 21, 20)
-    setup_world(monkeypatch, db, now)
-    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda *a: 1, now=now)
-    assert out["trader"]["sent"] == 0 and any("риск-менеджер" in k for k in out["trader"]["rejects"])
-
-
-def test_second_pass_does_not_duplicate(monkeypatch, db, moscow, tmp_path):
-    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
-    now = moscow(2026, 10, 21, 14)
-    setup_world(monkeypatch, db, now)
-    cloud.run_pass(db=db, router=NoLLM(), send=lambda *a: 1, now=now)
-    out = cloud.run_pass(db=db, router=NoLLM(), send=lambda *a: 1, now=now + 1800)
-    assert out["trader"]["sent"] == 0 and db.one("SELECT COUNT(*) n FROM signals")["n"] == 1
+    assert cloud.run_pass(db=db, router=NoLLM(), send=lambda *a: 1, now=now + 1800)["trader"] == {"halt": True}

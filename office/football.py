@@ -140,7 +140,7 @@ def opinions(db, feed: dict | None, now: float, max_resolve: int = 8) -> list[Op
             continue
         up = sbc.calibrated_up(db, "totw")
         ops.append(Opinion("football", c["ea_id"], c["name"], "Золотая редкая" if c["rarity"].lower() == "rare" else "Золотая", c["rating"],
-                           round(min(0.85, 0.25 + 0.08 * r["score"]), 2), "invest",
+                           round(min(0.85, 0.25 + 0.08 * r["score"]), 2), "totw",
                            f"в недавних матчах {r['note']} — вероятный кандидат в команду недели (состав объявят в среду в 18:00 по Москве)",
                            buy_max=cur, sell_ref=int(cur * (1 + up)), ttl_h=min(hrs, 24), horizon_d=min(hrs / 24, 3)))
         sbc.add_forecast(db, now, c["ea_id"], c["name"], "totw", "up", cur, "кандидат в команду недели")

@@ -9,7 +9,7 @@ from . import cards, config, http, intel, ru
 from .model import Opinion
 
 FODDER_RATINGS = range(83, 90)
-PRIOR_UP = {"fodder": 0.20, "totw": 0.20}      # стартовые ожидания роста (до накопления проверок); дальше заменяются медианой по проверенным прогнозам
+PRIOR_UP = {"fodder": 0.20, "totw": 0.20, "cycle": 0.15}      # стартовые ожидания роста (до накопления проверок); дальше заменяются медианой по проверенным прогнозам
 CHECK_DAYS = (1, 3, 7)
 SBC_URL = re.compile(r'href="/sbc/(players|upgrades|challenges|foundations|icons|heroes|[a-z\-]+)/27-(\d+)-([a-z0-9\-]+)/"')
 
@@ -112,6 +112,7 @@ def tracked_ids(db, now: float) -> set[int]:
     ids = {r["ea_id"] for r in db.q("SELECT DISTINCT ea_id FROM facts WHERE ea_id IS NOT NULL AND ts>?", (now - 5 * 86400,))}
     ids |= {r["ea_id"] for r in db.q("SELECT DISTINCT ea_id FROM signals WHERE ts>?", (now - 8 * 86400,)) if r["ea_id"] and r["ea_id"] > 0}
     ids |= {r["ea_id"] for r in db.q("SELECT DISTINCT ea_id FROM forecasts WHERE ea_id>0 AND ts>?", (now - 8 * 86400,))}
+    ids |= {r["track_id"] for r in db.q("SELECT DISTINCT track_id FROM trials WHERE track_id>0 AND ts>?", (now - 5 * 86400,))}
     return ids
 
 
@@ -223,10 +224,14 @@ def opinions(db, feed: dict | None, now: float) -> list[Opinion]:
         ref = ev["price"] if ev and ev["price"] and ev["conf"] >= 0.3 else 0
         pct = percentile(db, -r, idx, now)
         reasons, sell, strength = [], 0, 0.0
+        names = ", ".join(intel._title(db, s) for s in ev["srcs"]) if ev else ""
         if ref and ref >= idx * 1.15:
             sell = ref
-            names = ", ".join(intel._title(db, s) for s in ev["srcs"])
             reasons.append(f"источники ({names}) называют цену корма {r} около {ru.num(ref)}, а у самых дешёвых карт — {ru.num(idx)}")
+            strength = ev["conf"]
+        elif ev and not ev["price"] and ev["conf"] >= 0.3:          # утечка о наборе под карты этого рейтинга, цены в посте нет
+            sell = int(idx * (1 + calibrated_up(db, "fodder")))
+            reasons.append(f"по утечкам ({names}) скоро наборы под карты {r}; корм пока стоит {ru.num(idx)}, обычно он дорожает к выходу набора")
             strength = ev["conf"]
         if demand and (pct is not None and pct <= 0.35):
             sell = max(sell, int(idx * (1 + calibrated_up(db, "fodder"))))
@@ -236,7 +241,7 @@ def opinions(db, feed: dict | None, now: float) -> list[Opinion]:
             continue
         c = db.one("SELECT * FROM cards WHERE ea_id=?", (cheapest,))
         ops.append(Opinion("sbc", cheapest, c["name"] if c else "корм", "Золотая редкая", r, round(min(strength, 0.9), 2), "fodder", "; ".join(reasons),
-                           srcs=(ev["srcs"] if ref and ev else []), buy_max=idx, sell_ref=sell, ttl_h=12, horizon_d=2))
+                           srcs=(ev["srcs"] if ev and (ref or not ev["price"]) else []), buy_max=idx, sell_ref=sell, ttl_h=12, horizon_d=2))
         add_forecast(db, now, -r, f"корм {r}", "fodder", "up", idx, reasons[0])
     return ops
 
@@ -252,25 +257,28 @@ def promo_watch(db, feed: dict | None, now: float) -> None:
             add_forecast(db, now, -r, f"корм {r}", "promo", "down", fi[0], "начало нового промо: предложение карт растёт")
 
 
-def reversion_opinions(db, feed: dict | None, ea_ids, now: float, min_n: int = 4, min_span_min: float = 45) -> list[Opinion]:
-    """Прогноз «возврат к своей медиане»: у карты с зависшей ценой текущая цена заметно ниже медианы собственной истории (журнал цен fut.gg) — прогноз отдела: вернётся."""
+def cycle_opinions(db, feed: dict | None, now: float) -> list[Opinion]:
+    """Недельный цикл: корм дешевле в четверг вечером и в пятницу (после наград Лиги выходных рынок насыщен), к выходным дорожает перед воскресной сменой промо.
+    Окно покупки — четверг 18:00 … пятница 16:00 по Москве, продажа — суббота–воскресенье. Ожидаемый рост — стартовое значение, дальше его заменяет проверка прогнозов."""
+    import datetime as dt
+    w = dt.datetime.fromtimestamp(now, config.TZ)
+    w.replace(hour=18, minute=0, second=0, microsecond=0)
+    if not feed or not ((w.weekday() == 3 and w.hour >= 18) or (w.weekday() == 4 and w.hour < 16)):
+        return []
+    end = (w + dt.timedelta(days=(4 - w.weekday()))).replace(hour=16, minute=0, second=0, microsecond=0)
     ops = []
-    if not feed:
-        return ops
-    for i in {int(e) for e in ea_ids if e}:
-        cur = feed["prices"].get(i)
-        rows = db.q("SELECT ts, price FROM price_log WHERE ea_id=? AND ts>? ORDER BY ts", (i, now - 3 * 86400))
-        if not cur or len(rows) < min_n or (rows[-1]["ts"] - rows[0]["ts"]) / 60 < min_span_min:
+    for r in (86, 87, 88):         # на дешёвом корме 500 монет прибыли не набрать
+        fi = fodder_index(db, feed, r)
+        if not fi:
             continue
-        med = statistics.median(r["price"] for r in rows)
-        drop = 1 - cur / med
-        if drop < 0.08:
-            continue
-        c = db.one("SELECT * FROM cards WHERE ea_id=?", (i,))
-        if not c:
-            continue
-        ops.append(Opinion("sbc", i, c["name"], intel._ver_ru(c["rarity"]), c["rating"], round(min(0.85, 0.35 + drop * 2), 2), "flip",
-                           f"цена на {drop * 100:.0f}% ниже своей обычной за последние дни (обычно около {ru.num(med)}), прогноз — возврат".replace(".", ","),
-                           buy_max=cur, sell_ref=int(med), ttl_h=3, horizon_d=0.2))
-        add_forecast(db, now, i, c["name"], "reversion", "up", cur, "возврат к медиане")
+        idx, cheapest = fi
+        c = db.one("SELECT * FROM cards WHERE ea_id=?", (cheapest,))
+        pct = percentile(db, -r, idx, now)
+        up = calibrated_up(db, "cycle")
+        why = f"недельный цикл: корм {r} обычно дешевле в четверг вечером и в пятницу, а в субботу и воскресенье дорожает; продавать лучше с субботы по воскресенье"
+        if pct is not None:
+            why += f" (сейчас цена в {int(pct * 100)}% своего недельного диапазона снизу)"
+        ops.append(Opinion("sbc", cheapest, c["name"] if c else "корм", "Золотая редкая", r, 0.5 if pct is None or pct > 0.5 else 0.65, "cycle", why,
+                           buy_max=idx, sell_ref=int(idx * (1 + up)), ttl_h=max(1.0, (end - w).total_seconds() / 3600), horizon_d=2))
+        add_forecast(db, now, -r, f"корм {r}", "cycle", "up", idx, "недельный цикл")
     return ops

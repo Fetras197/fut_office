@@ -114,7 +114,7 @@ def test_merge_and_opinions(db, monkeypatch):
     ev = intel.merge(db, now)
     assert len(ev) == 1 and ev[0]["n"] == 2 and ev[0]["conf"] > 0.55 and ev[0]["flip"]
     ops = intel.opinions(db, now)
-    assert ops[0].sell_ref == 49000 and ops[0].kind == "flip" and "Роб Трейд" in ops[0].reason
+    assert ops[0].sell_ref == 49000 and ops[0].kind == "channel" and "Роб Трейд" in ops[0].reason
 
 
 def test_process_raw_dedups_same_fact(db, monkeypatch):

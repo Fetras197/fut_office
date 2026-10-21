@@ -29,6 +29,10 @@ SCHEMA = [
     "chk0 INTEGER, chk10 INTEGER, chk10_ts REAL, tg_msg INTEGER, status TEXT DEFAULT 'sent')",
     "CREATE INDEX IF NOT EXISTS ix_sig_key ON signals(key, ts)",
     "CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, sid INTEGER, action TEXT, price INTEGER, ts REAL, ext_id TEXT UNIQUE)",
+    # сигналы и пробные кандидаты с виртуальной проверкой через 24/72 часа (track_id: ea_id карты или -рейтинг для индекса корма)
+    "CREATE TABLE IF NOT EXISTS trials (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, key TEXT, mode TEXT, type TEXT, track_id INTEGER, ea_id INTEGER, name TEXT, rating INTEGER, "
+    "buy_max INTEGER, sell_min INTEGER, price_at INTEGER, depts TEXT, score REAL, sig_id INTEGER, p24 INTEGER, hi24 INTEGER, p72 INTEGER, hi72 INTEGER, done INTEGER DEFAULT 0)",
+    "CREATE INDEX IF NOT EXISTS ix_trials ON trials(key, ts)",
     "CREATE TABLE IF NOT EXISTS dept_stats (dept TEXT, day TEXT, votes INTEGER DEFAULT 0, good INTEGER DEFAULT 0, PRIMARY KEY(dept, day))",
 ]
 

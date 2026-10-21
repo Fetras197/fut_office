@@ -5,7 +5,7 @@ import os
 import time
 import traceback
 
-from . import accountant, cards, config, db as dbm, football, intel, link, llm, market, sbc, telegram, trader
+from . import ru, accountant, buttons, cards, config, db as dbm, football, intel, llm, sbc, telegram, trader
 
 SIGNALS_FILE = "signals.json"
 
@@ -48,8 +48,7 @@ def run_pass(db=None, router=None, send=None, now: float | None = None, dry: boo
     if router is None:
         router = llm.RoleRouter()
     out = {}
-    phone = guarded("телефон: данные рынка", lambda: link.read_json("phone_feed.json", "phone"))
-    ledger = guarded("телефон: журнал кнопок", lambda: link.read_json("ledger.json", "phone"))
+    guarded("кнопки в Telegram", lambda: buttons.poll(db, now))
     gg = guarded("fut.gg: цены", lambda: cards.feed(True))
     out["intel"] = guarded("разведка", lambda: intel.run(db, router, now), {})
     if every(db, "sbc_refresh", 55 * 60, now):
@@ -59,16 +58,14 @@ def run_pass(db=None, router=None, send=None, now: float | None = None, dry: boo
         out["football"] = guarded("футбол", lambda: football.run(db, now), {})
     guarded("поведение после промо", lambda: sbc.promo_watch(db, gg, now))
     guarded("проверка прогнозов", lambda: sbc.verify_forecasts(db, gg, now))
+    guarded("журнал цен", lambda: sbc.record_prices(db, gg, now))
     ops = []
-    for name, fn in (("мнения: разведка", lambda: intel.opinions(db, now)), ("мнения: рынок", lambda: market.opinions(db, phone, gg, now)),
-                     ("мнения: наборы", lambda: sbc.opinions(db, gg, now)), ("мнения: футбол", lambda: football.opinions(db, gg, now))):
+    for name, fn in (("мнения: разведка", lambda: intel.opinions(db, now)), ("мнения: наборы", lambda: sbc.opinions(db, gg, now)),
+                     ("мнения: недельный цикл", lambda: sbc.cycle_opinions(db, gg, now)), ("мнения: футбол", lambda: football.opinions(db, gg, now))):
         ops += guarded(name, fn, []) or []
-    mk = [o for o in ops if o.dept == "market"]
-    guarded("журнал цен", lambda: sbc.record_prices(db, gg, now, [o.ea_id for o in mk]))
-    ops += guarded("мнения: возврат к медиане", lambda: sbc.reversion_opinions(db, gg, [o.ea_id for o in mk], now), []) or []
-    out["opinions"] = {d: sum(1 for o in ops if o.dept == d) for d in ("intel", "market", "sbc", "football")}
-    guarded("бухгалтер: журнал", lambda: accountant.ingest_ledger(db, ledger))
+    out["opinions"] = {d: sum(1 for o in ops if o.dept == d) for d in ru.VOTERS}
     guarded("бухгалтер: проверка цен", lambda: accountant.check_prices(db, cards.feed(False), now))
+    guarded("бухгалтер: виртуальные проверки", lambda: accountant.verify_trials(db, cards.feed(False), now))
     guarded("бухгалтер: источники", lambda: (accountant.update_facts(db, now), accountant.update_ratings(db, srcs), accountant.update_dept_stats(db, now)))
     if os.environ.get("OFFICE_HALT") == "1":
         log("OFFICE_HALT=1: новые сигналы не отправляются")
@@ -76,10 +73,13 @@ def run_pass(db=None, router=None, send=None, now: float | None = None, dry: boo
     else:
         snd = send or (telegram.send if telegram.configured() and not dry else lambda t, b=None: (print(t) or None))
         out["trader"] = guarded("трейдер", lambda: trader.run(db, ops, lambda force: cards.feed(force), now, send=snd), {})
+        tr = out["trader"] or {}
+        accountant.bump_day(db, now, keys=tr.get("keys", []))
+        guarded("отчёт 21:00", lambda: accountant.evening_report(db, now, send=snd))
         guarded("совет", lambda: accountant.sunday_council(db, srcs, router, now, send=snd))
     guarded("публикация", lambda: publish(db, now))
     guarded("уборка", lambda: db.prune(now))
-    log("итог: " + json.dumps(out, ensure_ascii=False, default=str)[:900])
+    log("итог: " + json.dumps({**out, "trader": {k: v for k, v in (out.get("trader") or {}).items() if k != "keys"}}, ensure_ascii=False, default=str)[:900])
     return out
 
 

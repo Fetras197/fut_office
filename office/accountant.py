@@ -3,7 +3,7 @@ import datetime as dt
 import json
 import time
 
-from . import config, intel, llm, risk, ru, sbc, telegram
+from . import config, intel, llm, risk, ru, sbc, telegram, trader
 
 PRIOR_WEIGHT = 4
 DEMOTE_BELOW, DEMOTE_MIN_CHECKS = 0.35, 8
@@ -155,6 +155,13 @@ def sunday_council(db, srcs: list[dict], router, now: float, send=telegram.send)
         elif r["checks"] >= DEMOTE_MIN_CHECKS and r["rating"] < DEMOTE_BELOW:
             notes.append(f"источник «{title}» понижен: точность {int(r['rating'] * 100)}% по {r['checks']} проверкам, его слову верят меньше")
     text = report_text(db, now)
+    vs = virtual_stats(db, now, 7, 24)
+    if vs["n"]:
+        text += "\n<b>Виртуальная проверка (24 часа, неделя):</b> отделы — " + "; ".join(f"{ru.DEPTS.get(d, d)} {g}/{n}" for d, (g, n) in vs["dept"].items()) + \
+                "; типы — " + "; ".join(f"{ru.SIGNAL_TYPES.get(t, t)} {g}/{n}" for t, (g, n) in vs["type"].items())
+        vs3 = virtual_stats(db, now, 7, 72)
+        if vs3["n"]:
+            text += "; через 72 часа в плюс: " + ", ".join(f"{ru.DEPTS.get(d, d)} {g}/{n}" for d, (g, n) in vs3["dept"].items())
     if notes:
         text += "\n<b>Решения совета:</b>\n" + "\n".join("• " + n for n in notes)
     verdict = None
@@ -171,3 +178,103 @@ def sunday_council(db, srcs: list[dict], router, now: float, send=telegram.send)
     send(text, None)
     db.kv_set(key, now)
     return text
+
+# ── виртуальная проверка (пробные кандидаты и сами сигналы) через 24 и 72 часа ─────
+def _price_at(db, track: int, ts: float, feed: dict | None, now: float):
+    r = db.one("SELECT price FROM price_log WHERE ea_id=? AND ts BETWEEN ? AND ? ORDER BY ABS(ts-?) LIMIT 1", (track, ts - 6 * 3600, ts + 18 * 3600, ts))
+    if r:
+        return r["price"]
+    if track > 0 and feed and now < ts + 18 * 3600:
+        return feed["prices"].get(track)
+    return None
+
+
+def verify_trials(db, feed: dict | None, now: float) -> int:
+    """Виртуальный результат: покупка по цене на момент записи; через 24/72 ч смотрим цену и максимум за период."""
+    n = 0
+    for t in db.q("SELECT * FROM trials WHERE done=0 AND ts>?", (now - 6 * 86400,)):
+        for h in (24, 72):
+            if t[f"p{h}"] is not None or now < t["ts"] + h * 3600:
+                continue
+            p = _price_at(db, t["track_id"], t["ts"] + h * 3600, feed, now)
+            if not p:
+                continue
+            hi = db.one("SELECT MAX(price) m FROM price_log WHERE ea_id=? AND ts BETWEEN ? AND ?", (t["track_id"], t["ts"], t["ts"] + h * 3600 + 3600))["m"] or p
+            db.x(f"UPDATE trials SET p{h}=?, hi{h}=? WHERE id=?", (p, max(hi, p), t["id"]))
+            n += 1
+        t2 = db.one("SELECT p72 FROM trials WHERE id=?", (t["id"],))
+        if t2["p72"] is not None or now > t["ts"] + 96 * 3600:
+            db.x("UPDATE trials SET done=1 WHERE id=?", (t["id"],))
+    return n
+
+
+def virtual_profit(t: dict, h: int) -> int | None:
+    p = t[f"p{h}"]
+    return None if p is None else risk.after_tax(p) - t["price_at"]
+
+
+def virtual_stats(db, now: float, days: int = 7, h: int = 24, matured_days: float | None = None) -> dict:
+    """{'dept': {отдел: (в плюс, всего)}, 'type': {тип: (в плюс, всего)}, 'mode': {'signal'|'trial': (в плюс, всего)}, 'profit': средняя виртуальная прибыль, 'n': число проверенных}"""
+    rows = [t for t in db.q(f"SELECT * FROM trials WHERE p{h} IS NOT NULL AND ts>?", (now - days * 86400,)) if matured_days is None or t["ts"] + h * 3600 > now - matured_days * 86400]
+    out = {"dept": {}, "type": {}, "mode": {}, "n": len(rows), "profit": None}
+    prof = []
+    for t in rows:
+        vp = virtual_profit(t, h)
+        good = 1 if vp > 0 else 0
+        prof.append(vp)
+        keys = [("dept", d) for d in json.loads(t["depts"])] + [("type", t["type"]), ("mode", t["mode"])]
+        for kind, k in keys:
+            g, n = out[kind].get(k, (0, 0))
+            out[kind][k] = (g + good, n + 1)
+    if prof:
+        out["profit"] = int(sum(prof) / len(prof))
+    return out
+
+
+def best_dept(vs: dict, min_n: int = 3):
+    c = [(g / n, n, d) for d, (g, n) in vs["dept"].items() if n >= min_n]
+    return max(c) if c else None
+
+
+def bump_day(db, now: float, **kw) -> None:
+    key = f"day:{dt.datetime.fromtimestamp(now, config.TZ).strftime('%F')}"
+    d = db.kv_get(key, {})
+    for k, v in kw.items():
+        d[k] = sorted(set(d.get(k, [])) | set(v)) if isinstance(v, list) else d.get(k, 0) + v
+    db.kv_set(key, d)
+
+
+def evening_report(db, now: float, send=telegram.send) -> str | None:
+    """Отчёт в 21:00 по Москве (один раз в сутки, на первом проходе после 21:00)."""
+    w = dt.datetime.fromtimestamp(now, config.TZ)
+    key = f"evening:{w.strftime('%F')}"
+    if w.hour < 21 or db.kv_get(key):
+        return None
+    day = db.kv_get(f"day:{w.strftime('%F')}", {})
+    start = trader.day_start(now)
+    sigs = db.q("SELECT type, depts FROM signals WHERE ts>=?", (start,))
+    trials = db.one("SELECT COUNT(*) n FROM trials WHERE mode='trial' AND ts>=?", (start,))["n"]
+    v24 = virtual_stats(db, now, days=4, h=24, matured_days=1)
+    v7 = virtual_stats(db, now, days=7, h=24)
+    L = [f"📋 <b>Отчёт за день, {w.strftime('%d.%m')}</b>",
+         f"Кандидатов рассмотрено: {len(day.get('keys', []))}. Боевых сигналов: {len(sigs)} из {config.MAX_SIGNALS_PER_DAY} возможных. Пробных записей (один отдел «за»): {trials}."]
+    if sigs:
+        L.append("Сигналы по типам: " + ", ".join(f"{ru.SIGNAL_TYPES[t]} — {n}" for t, n in _count([s["type"] for s in sigs]).items()))
+    if v24["n"]:
+        sg, tg = v24["mode"].get("signal", (0, 0)), v24["mode"].get("trial", (0, 0))
+        L.append(f"Виртуальный результат (проверки через 24 часа, завершённые за сутки): всего {v24['n']}, в плюс после налога — {sum(g for g, _ in (sg, tg))}; "
+                 f"сигналы — {sg[0]} из {sg[1]}, пробные — {tg[0]} из {tg[1]}; средняя виртуальная прибыль {ru.coins(v24['profit'])}.")
+    else:
+        L.append("Виртуальных проверок через 24 часа за сутки пока нет — записи ещё созревают.")
+    b = best_dept(v7)
+    L.append(f"Лучший отдел за неделю: {ru.DEPTS[b[2]]} — {b[0] * 100:.0f}% в плюс ({b[1]} проверок)." if b else "Лучший отдел пока не определён: мало проверок (нужно не меньше трёх на отдел).")
+    send("\n".join(L), None)
+    db.kv_set(key, now)
+    return "\n".join(L)
+
+
+def _count(items):
+    out = {}
+    for i in items:
+        out[i] = out.get(i, 0) + 1
+    return out

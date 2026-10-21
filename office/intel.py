@@ -25,6 +25,7 @@ FODDER_W = re.compile(r"фо[дл]+ер|корм", re.I)
 PRICE_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*([A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+(?:\s+[A-ZÀ-Ýa-zà-ÿ][\wÀ-ÿ'’\.\-]+){0,3})\s*(>=|<=|≥|≤|>|<|→|–|—|-|:|до)\s*(до\s+)?(\d[\d\s\.,]*\d|\d)\s*(к|k|тыс|K)?", re.M)
 NAME_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*(?:[\U0001F1E6-\U0001F1FF]{2}\s*)?([A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'’\.\-]+){0,2})\s*(?:[\U0001F1E6-\U0001F1FF]{2})?\s*$", re.M)
 RATING_LINE = re.compile(r"^[\s•\-\*▪️🔸🔹▫️]*(8[3-9]|9[0-1])\s*[—–\-:]+\s*>?\s*=?\s*(\d[\d\s\.,]*\d|\d)\s*(к|k)?\s*$", re.M)
+DEMAND_RE = re.compile(r"(?:апгрейд|upgrade|улучшени\w*|сбч|sbc)[^\n.]{0,25}?\b(8[3-9])\s?\+|\b(8[3-9])\s?\+[^\n.]{0,25}?(?:апгрейд|upgrade|сбч|sbc)", re.I)
 STOP_NAMES = {"Купи", "Футбол", "Boosty", "Тренировки", "Трейд", "Буст", "Rush", "FC", "EA", "SBC", "TOTW", "MLS", "WL"}
 
 
@@ -182,6 +183,10 @@ def extract_rules(text: str) -> list[dict]:
         if 150 <= price <= 2_000_000:
             facts.append({"kind": "fodder", "player": "", "version": "", "rating": int(m.group(1)), "action": "sell_above", "price": price,
                           "note": f"корм {m.group(1)}: ориентир {ru.num(price)}", "flip": False})
+    for m in DEMAND_RE.finditer(text):      # утечка набора-улучшения «83+», «апгрейд 85+»: спрос на корм этого рейтинга (без цены)
+        r = int(m.group(1) or m.group(2))
+        if 83 <= r <= 89 and not any(f["kind"] == "fodder" and f["rating"] == r for f in facts):
+            facts.append({"kind": "fodder", "player": "", "version": "", "rating": r, "action": "none", "price": 0, "note": f"утечка: набор под карты {r}+", "flip": False})
     kind = None
     if TOTW_W.search(low):
         kind = "totw"
@@ -364,12 +369,12 @@ def opinions(db, now: float) -> list[Opinion]:
         ver = ru.VERSIONS.get(c["rarity"].lower().replace(" ", "_"), None) or _ver_ru(c["rarity"])
         names = ", ".join(_title(db, s) for s in e["srcs"])
         if e["kind"] == "sell" and e["price"]:
-            ops.append(Opinion("intel", e["ea_id"], c["name"], ver, c["rating"], e["conf"], "flip" if e["flip"] else "invest",
+            ops.append(Opinion("intel", e["ea_id"], c["name"], ver, c["rating"], e["conf"], "channel",
                                f"источники ({names}) дают ориентир продажи {ru.num(e['price'])}" + (f", подтверждений: {e['n']}" if e["n"] > 1 else ""),
-                               srcs=e["srcs"], sell_ref=e["price"], ttl_h=12, horizon_d=0.5 if e["flip"] else 2))
+                               srcs=e["srcs"], sell_ref=e["price"], ttl_h=24, horizon_d=2))
         elif e["kind"] == "buy" and e["price"]:
-            ops.append(Opinion("intel", e["ea_id"], c["name"], ver, c["rating"], e["conf"], "flip" if e["flip"] else "invest",
-                               f"источники ({names}) советуют брать не дороже {ru.num(e['price'])}", srcs=e["srcs"], buy_max=e["price"], ttl_h=12, horizon_d=1))
+            ops.append(Opinion("intel", e["ea_id"], c["name"], ver, c["rating"], e["conf"], "channel",
+                               f"источники ({names}) советуют брать не дороже {ru.num(e['price'])}", srcs=e["srcs"], buy_max=e["price"], ttl_h=24, horizon_d=2))
     return ops
 
 

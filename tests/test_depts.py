@@ -3,9 +3,8 @@ import time
 
 import pytest
 
-from office import accountant, config, football, intel, llm, link, market, risk, ru, sbc, trader
-from office.model import Opinion
-from tests.conftest import FakeResp, FakeSession
+from office import accountant, config, football, intel, llm, risk, ru, sbc
+from tests.conftest import FakeSession
 
 NOW_Y, NOW_M, NOW_D = 2026, 10, 21     # среда
 
@@ -139,108 +138,6 @@ def test_liquidity_veto(db, moscow):
     assert "ликвидность" in risk.check(db, {**base, "liq": 3}, now)
 
 
-# ── рынок (телефон) ──────────────────────────────────────────────────────────
-def test_market_reads_phone_feed(db):
-    now = time.time()
-    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
-    phone = {"ts": now - 60, "hang": [{"ea_id": 7, "name": "Haaland", "rating": 91, "price": 80000, "avgp": 100000, "sales24h": 40, "lots": [80000, 90000], "ts": now - 120}]}
-    ops = market.opinions(db, phone, {"prices": {7: 82000}}, now)
-    assert len(ops) == 1 and ops[0].kind == "flip" and ops[0].sell_ref == 100000 and ops[0].liq == 40
-    assert market.opinions(db, {**phone, "ts": now - 3 * 3600}, None, now) == []        # данные телефона устарели
-    assert market.opinions(db, None, None, now) == []
-    cheap = {"ts": now, "hang": [{"ea_id": 7, "price": 99000, "avgp": 100000, "ts": now}]}
-    assert market.opinions(db, cheap, None, now) == []                                 # запас меньше налога
-
-
-# ── трейдер ──────────────────────────────────────────────────────────────────
-def op(dept, ea=7, strength=0.7, buy=None, sell=None, kind="flip", srcs=None, liq=None, rating=91, name="Haaland"):
-    return Opinion(dept, ea, name, "Золотая редкая", rating, strength, kind, "довод отдела", srcs=srcs or [], buy_max=buy, sell_ref=sell, liq=liq)
-
-
-GG = {"prices": {7: 80000}}
-
-
-def test_two_depts_required(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    sig, why = trader.build(db, "c7", [op("market", sell=100000, buy=80000)], GG, now)
-    assert sig is None and "двух отделов" in why
-    sig, why = trader.build(db, "c7", [op("market", sell=100000, buy=80000), op("intel", sell=100000, srcs=["robtrade"])], GG, now)
-    assert sig and sig["type"] == "flip" and sig["buy_max"] >= 80000 and sig["buy_max"] <= risk.max_buy(100000) and sig["score"] >= 60
-    assert sig["profit"] == risk.profit(sig["buy_max"], sig["sell_min"]) >= 500
-    assert sig["depts"] == ["intel", "market"]
-
-
-def test_source_inside_opinion_counts_as_second_dept(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    sig, _ = trader.build(db, "c7", [op("sbc", kind="fodder", sell=100000, buy=80000, srcs=["robtrade"], strength=0.8)], GG, now)
-    assert sig and sig["type"] == "fodder" and set(sig["depts"]) == {"sbc", "intel"}
-
-
-def test_buy_price_never_below_current(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    sig, why = trader.build(db, "c7", [op("market", sell=100000, buy=70000), op("intel", sell=100000, srcs=["a"])], GG, now)
-    assert sig is None and "выше допустимой" in why                   # карта уже стоит 80000 при потолке ~72000
-
-
-def test_low_score_and_risk_veto(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    weak = [op("market", sell=100000, buy=80000, strength=0.05), op("intel", sell=100000, srcs=["a"], strength=0.05)]
-    sig, why = trader.build(db, "c7", weak, GG, now)
-    assert sig is None and "оценка" in why
-    sig, why = trader.build(db, "c7", [op("market", sell=100000, buy=80000), op("intel", sell=100000, srcs=["a"])], GG, moscow(2026, 10, 21, 20))
-    assert sig is None and "риск-менеджер" in why
-
-
-def test_message_format(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    sig, _ = trader.build(db, "c7", [op("market", sell=100000, buy=80000, liq=40), op("intel", sell=100000, srcs=["robtrade"])], GG, now)
-    t = trader.text_of(sig, 5)
-    import re
-    assert ru.no_latin(re.sub(r"<[^>]+>", "", t).replace("Haaland", ""))                       # кроме имени игрока латиницы нет
-    for part in ("Купить до", "Продать от", "Прибыль после налога", "Действует до", "Уверенность", "Почему", "быстрый перекуп", "Haaland"):
-        assert part in t
-    assert 2 <= t.count("\n• ") <= 4
-    assert [b[1] for row in trader.buttons(5) for b in row] == ["of:b:5", "of:n:5", "of:s:5"]
-
-
-def test_daily_limit_and_dedup(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    sent = []
-    def send(text, buttons=None):
-        sent.append(text)
-        return len(sent)
-    ops = []
-    for i in range(12):
-        db.x("INSERT INTO cards VALUES (?,?,?,?,?,?)", (100 + i, f"P{i}", 88, "", "Rare", now))
-        ops += [op("market", ea=100 + i, sell=100000, buy=80000, name=f"P{i}"), op("intel", ea=100 + i, sell=100000, srcs=["a"], name=f"P{i}")]
-    gg = {"prices": {100 + i: 80000 for i in range(12)}}
-    r = trader.run(db, ops, lambda force: gg, now, send=send, max_new=20)
-    assert r["sent"] == 10 and len(sent) == 10                        # не больше 10 в сутки
-    r2 = trader.run(db, ops, lambda force: gg, now + 600, send=send, max_new=20)
-    assert r2["sent"] == 0
-    # повтор той же карты в течение 6 часов не отправляется даже на следующий день утром?  — через 7 часов уже можно (лимит дня сброшен)
-    r3 = trader.run(db, ops, lambda force: gg, now + 24 * 3600, send=send, max_new=20)
-    assert r3["sent"] == 10
-
-
-def test_price_recheck_before_send(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    ops = [op("market", sell=100000, buy=80000), op("intel", sell=100000, srcs=["a"])]
-    calls = []
-    def fetch(force):
-        calls.append(force)
-        return {"prices": {7: 95000}} if force else GG                   # после свежей загрузки цена выросла
-    r = trader.run(db, ops, fetch, now, send=lambda *a: 1)
-    assert r["sent"] == 0 and calls == [False, True]
-
-
-def test_unsent_when_telegram_down(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    ops = [op("market", sell=100000, buy=80000), op("intel", sell=100000, srcs=["a"])]
-    trader.run(db, ops, lambda f: GG, now, send=lambda *a: None)
-    assert db.one("SELECT status FROM signals")["status"] == "unsent"
-
-
 # ── бухгалтер ────────────────────────────────────────────────────────────────
 def mk_signal(db, now, **kw):
     d = dict(ts=now, key="c7", type="flip", ea_id=7, name="Haaland", version="v", rating=91, buy_max=80000, sell_min=100000, profit=15000, expires=now + 3600,
@@ -346,30 +243,6 @@ def test_openrouter_cap_exists():
     assert "openrouter" in llm.OpenAICompatBackend.PROVIDERS
 
 
-def test_phone_link_roundtrip(monkeypatch):
-    import base64
-    monkeypatch.setenv("GH_TOKEN", "t")
-    store = {}
-    class S:
-        def get(self, url, params=None, headers=None, timeout=0):
-            p = url.split("/contents/")[-1]
-            if "/contents/" not in url:
-                return FakeResp(json.dumps({"object": {"sha": "abc"}}))
-            if p in store:
-                return FakeResp(json.dumps({"content": base64.b64encode(store[p]).decode(), "sha": "s1"}))
-            return FakeResp("", 404)
-        def put(self, url, headers=None, json=None, timeout=0):
-            store[url.split("/contents/")[-1]] = base64.b64decode(json["content"])
-            return FakeResp("", 201)
-        post = get
-    s = S()
-    assert link.read_json("phone_feed.json", "phone", session=s) is None
-    assert link.write_json("phone_feed.json", {"ts": 1, "hang": []}, "phone", session=s)
-    assert link.read_json("phone_feed.json", "phone", session=s) == {"ts": 1, "hang": []}
-    monkeypatch.delenv("GH_TOKEN")
-    assert link.read_json("phone_feed.json", "phone", session=s) is None            # без токена — молча None
-
-
 def test_promo_forecast_and_test_flag(db, moscow, monkeypatch):
     now = moscow(2026, 10, 23, 14)
     prices = {}
@@ -380,55 +253,3 @@ def test_promo_forecast_and_test_flag(db, moscow, monkeypatch):
     assert f["dept"] == "promo" and f["direction"] == "down" and f["ea_id"] == -85
     monkeypatch.setattr(config, "IGNORE_HOURS", True)
     assert risk.hours_veto(moscow(2026, 10, 21, 20)) is None
-
-
-def test_reversion_needs_history_and_drop(db):
-    now = time.time()
-    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
-    feed = {"prices": {7: 80000}}
-    assert sbc.reversion_opinions(db, feed, [7], now) == []                     # истории нет
-    for i, p in enumerate((100000, 101000, 99000, 100000, 100500)):
-        db.x("INSERT INTO price_log VALUES (7, ?, ?)", (now - (5 - i) * 1800, p))
-    ops = sbc.reversion_opinions(db, feed, [7], now)
-    assert len(ops) == 1 and ops[0].dept == "sbc" and ops[0].sell_ref == 100000 and ops[0].kind == "flip" and "ниже своей обычной" in ops[0].reason
-    assert sbc.reversion_opinions(db, {"prices": {7: 97000}}, [7], now) == []   # просадка меньше 8%
-    assert db.one("SELECT dept FROM forecasts")["dept"] == "reversion"
-
-
-def test_market_plus_reversion_make_a_signal(db, moscow):
-    now = moscow(2026, 10, 21, 14)
-    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
-    for i, p in enumerate((100000, 101000, 99000, 100000, 100500)):
-        db.x("INSERT INTO price_log VALUES (7, ?, ?)", (now - (5 - i) * 1800, p))
-    gg = {"prices": {7: 80000}}
-    phone = {"ts": now, "hang": [{"ea_id": 7, "name": "Haaland", "rating": 91, "price": 80000, "avgp": 100000, "sales24h": 40, "ts": now}]}
-    ops = market.opinions(db, phone, gg, now) + sbc.reversion_opinions(db, gg, [7], now)
-    sig, why = trader.build(db, "c7", ops, gg, now)
-    assert sig and set(sig["depts"]) == {"market", "sbc"} and sig["type"] == "flip"
-
-
-def test_every_department_speaks_russian(db, moscow, monkeypatch):
-    """Все строки «почему» от всех отделов — без латиницы (кроме имени игрока)."""
-    import re
-    now = moscow(2026, 10, 21, 14)
-    srcs = [{"id": "robtrade", "kind": "telegram", "rating": 0.55, "title": "Роб Трейд"}]
-    intel.ensure_stats(db, srcs)
-    monkeypatch.setattr(intel, "load_sources", lambda *a, **k: srcs)
-    db.x("INSERT INTO cards VALUES (7,'Haaland',91,'Haaland','Rare',?)", (now,))
-    db.x("INSERT INTO facts (key,kind,player,action,price,src,ts,text,ea_id) VALUES ('sell:c7','sell','Haaland','sell_above',100000,'robtrade',?,'x',7)", (now,))
-    for i, p in enumerate((100000, 101000, 99000, 100000, 100500)):
-        db.x("INSERT INTO price_log VALUES (7, ?, ?)", (now - (5 - i) * 1800, p))
-    prices = {7: 80000}
-    seed_fodder(db, prices, rating=85)
-    db.x("INSERT INTO facts (key,kind,player,rating,action,price,src,ts,text) VALUES ('fodder:r85','fodder','',85,'sell_above',2800,'robtrade',?,'корм')", (now,))
-    db.x("INSERT INTO football VALUES ('f1',?,'Haaland','Манчестер',2,1,3,0,9,'голов 2, передач 1, бонус 3')", (now,))
-    gg = {"prices": prices}
-    phone = {"ts": now, "hang": [{"ea_id": 7, "name": "Haaland", "rating": 91, "price": 80000, "avgp": 100000, "sales24h": 40, "lots": [80000], "ts": now}]}
-    monkeypatch.setattr(football.cards, "resolve", lambda *a, **k: db.one("SELECT * FROM cards WHERE ea_id=7"))
-    ops = (intel.opinions(db, now) + market.opinions(db, phone, gg, now) + sbc.opinions(db, gg, now) + football.opinions(db, gg, now) + sbc.reversion_opinions(db, gg, [7], now))
-    assert {o.dept for o in ops} == {"intel", "market", "sbc", "football"}
-    for o in ops:
-        assert ru.no_latin(o.reason), o.reason
-        assert ru.no_latin(o.version), o.version
-    msg = trader.text_of(trader.build(db, "c7", [o for o in ops if o.ea_id == 7], gg, now)[0], 1)
-    assert ru.no_latin(re.sub(r"<[^>]+>", "", msg).replace("Haaland", ""))

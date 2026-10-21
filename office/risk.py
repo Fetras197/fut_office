@@ -49,9 +49,9 @@ def promo_veto(db, now: float) -> str | None:
     return None
 
 
-def check(db, bundle: dict, now: float) -> str | None:
-    """bundle: {name, buy, sell, liq, kind, ea_id}. Строка-причина запрета или None."""
-    for v in (hours_veto(now), promo_veto(db, now)):
+def check(db, bundle: dict, now: float, hours: bool = True) -> str | None:
+    """bundle: {name, buy, sell, liq, kind, ea_id}. Строка-причина запрета или None. hours=False — пробный кандидат: запретные часы и промо его не касаются (это не сигнал)."""
+    for v in ((hours_veto(now), promo_veto(db, now)) if hours else ()):
         if v:
             return v
     inj = football.injured(db, now)

@@ -25,7 +25,7 @@ FB_CACHE = H / "fetras/futbin_mcp/cache.db"
 def phone_feed(now):
     """Копия office_link.build_feed без зависимости от aiogram: те же условия отбора."""
     sys.path.insert(0, str(H / "fetras/fut_bot"))
-    from bot import scan_db, office_link  # noqa: E402
+    from bot import office_link  # noqa: E402
 
     def map_fn(fid):
         try:

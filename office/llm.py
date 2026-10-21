@@ -134,6 +134,9 @@ class _Limited:
     sem = threading.Semaphore(3)
 
 
+GEMINI_DELAYS = tuple(int(x) for x in os.environ.get("GEMINI_DELAYS", "0,8").split(","))
+
+
 class GeminiBackend:
     """Gemini REST (ключ GEMINI_API_KEY из .env). JSON-режим ответа."""
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
@@ -168,7 +171,7 @@ class GeminiBackend:
                 "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2}}
         r = None
         for model in self.MODELS:  # дневная free-tier квота модели исчерпана → следующая модель
-            for delay in (0, 15, 30):  # поминутная квота/пик спроса → backoff
+            for delay in GEMINI_DELAYS:  # поминутная квота/пик спроса → короткий backoff (в облаке минуты Actions считаются)
                 time.sleep(delay)
                 with _Limited.sem:
                     self._pace()
@@ -425,7 +428,7 @@ def make_backend(name: str = "router"):
 _VIDEO_DOWN = [0.0]
 
 
-def video_summary(url: str, session=None, timeout: int = 240) -> str | None:
+def video_summary(url: str, session=None, timeout: int = 100) -> str | None:
     """Пересказ ролика на русском (как ytwatch): Gemini сама смотрит видео по ссылке. Нет ключа/бюджета/ответа → None."""
     key = os.environ.get("GEMINI_API_KEY")
     if not key or os.environ.get("GEMINI_DISABLED") == "1" or gemini_down() or not budget_allow("video") or time.time() < _VIDEO_DOWN[0]:

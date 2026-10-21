@@ -277,11 +277,15 @@ def process_raw(db, router, now: float, max_llm_posts: int = 12, max_resolve: in
         if not needs_llm:
             db.x("UPDATE raw SET parsed=1 WHERE uid=?", (r["uid"],))
     by_uid = {r["uid"]: r for r in rows}
+    if llm_posts and now < (db.kv_get("llm_backoff") or 0):
+        llm_posts = []        # недавно нейросети были недоступны: не тратим минуты прохода на повторы
     if llm_posts:
         LLM_ERR[0] = ""
         got = extract_llm(router, llm_posts)
         stats["llm"] = len(got)
         stats["llm_posts"] = len(llm_posts)
+        if LLM_ERR[0] and not got:
+            db.kv_set("llm_backoff", now + 20 * 60)
         if LLM_ERR[0]:
             stats["llm_err"] = LLM_ERR[0]
         for f in got:

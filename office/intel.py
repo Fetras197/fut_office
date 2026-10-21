@@ -1,6 +1,7 @@
 """Отдел 1. Разведка: открытые каналы без аккаунта → факты (купи/продай, утечки, SBC, промо, TOTW) → склейка дублей → мнения.
 Каждый источник опрашивается не чаще своего интервала; сбой источника не роняет проход."""
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import html
 import json
 import re
@@ -381,13 +382,16 @@ def run(db, router, now: float | None = None, session=None, srcs: list[dict] | N
     srcs = srcs if srcs is not None else load_sources()
     ensure_stats(db, srcs)
     got = {}
-    for s in srcs:
+
+    def one(s):
         try:
-            n = poll(db, s, now, session)
-            if n >= 0:
-                got[s["id"]] = n
+            return s["id"], poll(db, s, now, session)
         except Exception as e:   # сбой одного источника не должен ронять проход
-            got[s["id"]] = f"сбой: {type(e).__name__}"
+            return s["id"], f"сбой: {type(e).__name__}"
+    with ThreadPoolExecutor(max_workers=6) as ex:       # источники опрашиваются параллельно: проход короче, минуты Actions целее
+        for sid, n in ex.map(one, srcs):
+            if n != -1:
+                got[sid] = n
     stats = process_raw(db, router, now)
     stats["sources"] = got
     for s in srcs:     # ролики пересказываем в последнюю очередь: пересказ разберётся на следующем проходе

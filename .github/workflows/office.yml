@@ -1,12 +1,12 @@
 name: office
 
-# FUT-офис: один проход каждые 30 минут с 08:00 до 22:30 по Москве, ночью — два прохода (сбор данных). Состояние лежит в ветке `state`.
+# FUT-офис: один проход каждые 30 минут с 09:00 до 22:30 по Москве, ночью — два прохода (02:00 и 05:00) (сбор данных). Состояние лежит в ветке `state`.
 # Лимит бесплатных минут (2000 в месяц на все приватные репозитории): проход должен укладываться в минуту.
 # Стоп-кран: переменная репозитория OFFICE_HALT=1 (сигналы не отправляются) или Disable workflow.
 on:
   schedule:
-    - cron: "*/30 5-19 * * *"
-    - cron: "0 22,1 * * *"
+    - cron: "*/30 6-19 * * *"
+    - cron: "0 23,2 * * *"
   workflow_dispatch:
     inputs:
       skip_tests:
@@ -59,25 +59,20 @@ jobs:
           fi
           mkdir -p state/logs
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Зависимости
-        run: pip install -r requirements.txt
+      - name: Зависимости (в образе runner уже есть requests и PyYAML)
+        run: python3 -c "import requests, yaml" || pip install --user requests pyyaml
 
       - name: Тесты (по желанию, при ручном запуске)
         if: ${{ github.event_name == 'workflow_dispatch' && !inputs.skip_tests }}
-        run: python -m pytest -q -x -p no:cacheprovider
+        run: pip install --user pytest && python3 -m pytest -q -x -p no:cacheprovider
 
       - name: Проверка нейросетей
         if: ${{ inputs.llm_check }}
-        run: python -m office llmcheck
+        run: python3 -m office llmcheck
 
       - name: Проход офиса
         if: ${{ !inputs.llm_check }}
-        run: python -m office cloud
+        run: python3 -m office cloud
 
       - name: Сохранить состояние в ветку state
         if: ${{ always() && steps.restore.outcome == 'success' }}
